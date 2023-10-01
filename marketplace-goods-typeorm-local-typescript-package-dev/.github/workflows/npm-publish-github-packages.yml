@@ -1,0 +1,106 @@
+# This workflow will run tests using node and then publish a package to GitHub Packages when a release is created
+# For more information see: https://docs.github.com/en/actions/publishing-packages/publishing-nodejs-packages
+name: Build & Publish Marketplace Goods Local Microservice TypeScript Node.js Package to AWS play1
+
+on:
+  push:
+    branches: [ "BU-*"]
+    
+env:
+  # TODO: If not using seperate file for each environment, we should update the environment on regular basis in three places in this file (name:, env: and environment:)
+  env_name: play1
+  # project_name should be the Serverless.com folder/project not in root (not .)
+  project_name: marketplace_goods
+  
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    # I tried to add this to build job (originally was in publish job) to solve code E403
+    # npm ERR! 403 403 Forbidden - PUT https://npm.pkg.github.com/circles-zone/@circles-zone%2fmarketplace-goods-local - Permission permission_denied: The token provided does not match expected scopes.
+    permissions:
+      contents: read
+      packages: write
+      
+    environment:
+      name: play1
+      url: http://${{ env.env_name }}.circ.zone
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 16
+          
+          #I'm not sure we need those
+          registry-url: https://npm.pkg.github.com/
+          scope: "@circles-zone"
+         
+      - name: Authenticate PUT with private GitHub package to avoid 401
+        run: |
+          echo "@circles-zone:registry=https://npm.pkg.github.com" > .npmrc
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> .npmrc
+
+      - name: npm i
+        run: |
+          cd ./$project_name
+          npm i
+          
+      # Should we use "npm test --runInBand"?
+      - name: npm test
+        run: |
+          cd ./$project_name
+          npm test
+        env:
+          # Per Environment
+          LOGZIO_TOKEN: ${{secrets[format('LOGZIO_TOKEN_{0}', env.env_name)]}}
+          RDS_HOSTNAME: ${{ vars[format('RDS_HOSTNAME_{0}', env.env_name)] }}
+          # Per Microservice
+          RDS_USERNAME: ${{secrets.RDS_USERNAME}}
+          RDS_PASSWORD: ${{secrets.RDS_PASSWORD}}
+          
+  publish-gpr:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 16
+          registry-url: https://npm.pkg.github.com/
+          #scope: "@circles-zone"
+
+      - name: Authenticate PUT with private GitHub package to avoid 401
+        ##run: echo "//npm.pkg.github.com/:_authToken=${{ secrets.GIT_HUB_PACKAGE_WRITE_TOKEN }}" > ~/.npmrc
+        run: |
+          echo "@circles-zone:registry=https://npm.pkg.github.com" > ./marketplace_goods/.npmrc
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> ./marketplace_goods/.npmrc
+    
+      ## npm i works better for us than npm ci (i.e. local-storage-typescript backend)
+      - name: npm i
+        run: |
+          cd ./marketplace_goods
+          npm i
+
+      # Increase the version number instead of updating package.json manually (other solution might be 'grunt bump:patch')
+      #- run: git config --global user.email "info@circls.zone"
+      #- run: git config --global user.name "Circles"
+      # npm version patch is not wokring yet
+      - name: npm version patch
+        run: |
+          # npm version patch should run in project directory and not in the root directory
+          # must change direcoty to the MarketplaceGoodsBackend
+          cd ./$project_name
+          npm version patch
+          
+      # Should make sure package.json version is unique
+      # Should add @circles-zone/ to the package name in package.json
+      
+      - name: npm publish
+        run: |
+          cd ./$project_name
+          npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{secrets.GITHUB_TOKEN}}

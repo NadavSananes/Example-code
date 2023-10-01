@@ -1,0 +1,174 @@
+# This workflow will run tests using node and then publish a package to GitHub Packages when a release is created
+# For more information see: https://docs.github.com/en/actions/publishing-packages/publishing-nodejs-packages
+
+# TODO: Please change the <project-name> to the folder/project name everywhere and delete this line
+name: Build & Publish "marketplace-goods-local" Local|Remote TypeScript Node.js Package to Private GitHub npm play1
+
+on:
+  # TODO: Please make sure your code complies with our Definition of Done (DoD), `npm prepare`, `npm test`, tests cover 95% of the code, resolve all lint warnings, GitHub Action is Green in play1 before you create a Pull Request to the dev branch (dvlp1 Environment) 
+  #push:
+    #branches: [ "BU-*" ]
+  pull_request: 
+    branches: [ dev ]
+    
+env:
+  brand_name: Circlez
+  environment_name: play1
+  # TODO: <project_name> should be the folder/directory of the project. Should not be in the root (not .)
+  project_name: "marketplace-goods-local"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: play1
+      url: http://${{ env.environment_name }}.circ.zone
+    steps:
+      - uses: actions/checkout@v4.0.0
+      - uses: actions/setup-node@v3.6.0
+        with:
+          node-version: 16
+          # Is it mandatory?
+          #registry-url: 'https://npm.pkg.github.com'
+          
+      # Is it mandatory? The team should be able to test it locally without publishing
+      #- name: Authenticate PUT with private GitHub package to avoid 401 (npm ERR! code E401, npm ERR! 401 Unauthorized)
+        # Can we delete secrets GIT_HUB_PACKAGE_WRITE_TOKEN?
+        #run: echo "//npm.pkg.github.com/:_authToken=${{ secrets.GIT_HUB_PACKAGE_WRITE_TOKEN }}" > ~/.npmrc
+        #run: |
+          #echo "@circles-zone:registry=https://npm.pkg.github.com" > .npmrc
+          #echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> .npmrc          
+          
+      # If we get 403 Permission permission_denied: read_package, we need to add read permission in the repo we try to access in https://github.com/orgs/circles-zone/packages/npm/database-without-orm-local-typescript-package/settings for example 
+      # Should we do npm install before npm ci?
+      # 'npm ci' executing also 'npm tsc' which is equivalent to 'npm run prepare'
+      # No need to create .npmrc before npm ci
+      # In some cases it is needed to run both "npm i" and "npm ci" (i.e. marketplace-goods-graphql-typescript-serverless-com)
+      # In the development environment it is better to run `npm i` and not `npm ci`
+      - name: npm i
+        run: |
+          cd ./$project_name
+          npm i
+
+      # Some of the errors will be shown only if doing npx tsc (in case `npm i` is not executing npx tsc)
+      - name: npx tsc
+        run: |
+          cd ./$project_name
+          npx tsc    
+        #env:
+          # Reached heap limit Allocation failed - JavaScript heap out of memory
+          # https://www.makeuseof.com/javascript-heap-out-of-memory-error-fix/
+          #NODE_OPTIONS: --max-old-space-size=4096
+
+      - name: npm run lint
+        run: |
+          cd ./$project_name
+          npm install eslint@latest --save-dev
+          npm run lint
+
+      - name: Get GitHub Action (GHA) runner IP
+        id: ip
+        uses: haythem/public-ip@v1.3
+        with:
+          maxRetries: 40
+
+      - name: Setting AWS_DEFAULT_REGION and AWS_SG_NAME environment variables..
+        run: |
+          echo "AWS_DEFAULT_REGION=us-east-1" >> $GITHUB_ENV
+          # RDS/MySQL EC2 Security Group in Management/Master AWS Account 
+          echo "AWS_SG_NAME=mysql_mang_sg" >> $GITHUB_ENV
+
+      - name: Add GitHub Actions (GHA) runner IP to EC2 Security Group in Master/Management AWS Account
+        run: |
+          aws ec2 authorize-security-group-ingress --group-name ${{ env.AWS_SG_NAME }} --protocol tcp --port 3306 --cidr ${{ steps.ip.outputs.ipv4 }}/32    
+        env:
+          # Since RDS/MySQL is currently in Management/Master AWS Account
+          AWS_ACCESS_KEY_ID: ${{ secrets[format('AWS_ACCESS_KEY_ID_{0}', 'MANG1')] }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', 'MANG1')] }}
+          AWS_DEFAULT_REGION: ${{ env.AWS_DEFAULT_REGION }}
+
+      # Should we use "npm test --runInBand"?
+      - name: npm test
+        run: |
+          cd ./$project_name
+          # https://stackoverflow.com/questions/55991641/npm-test-coverage-never-exits
+          # I added '-- coverage'
+          npm test --detectOpenHandles --coverage
+        env:
+          # TODO: Please comment and then delete all variables which are not being used.
+          # TODO: In case remote-typescript-package we need only ENVIRONMENT:
+          # TODO Check if we want to copy from storage-local
+          BRAND_NAME: ${{ env.brand_name }}
+          ENVIRONMENT_NAME: ${{ env.environment_name }}
+          PRODUCT_USERNAME: ${{ vars[format('PRODUCT_USERNAME_{0}', env.environment_name)] }}
+          PRODUCT_PASSWORD: ${{ secrets[format('PRODUCT_PASSWORD_{0}', env.environment_name)] }}
+          # Per Environment
+          LOGZIO_TOKEN: ${{ secrets[format('LOGZIO_TOKEN_{0}', env.environment_name)] }}
+          RDS_HOSTNAME: ${{ vars[format('RDS_HOSTNAME_{0}', env.environment_name)] }}
+          # Per Microservice
+          # TODO: RDS environment variables are needed for Local and should be deleted in case of Remote
+          RDS_USERNAME: ${{ vars.RDS_USERNAME }}
+          RDS_PASSWORD: ${{ secrets.RDS_PASSWORD }}
+  
+      - name: Remove Github Actions IP from a security group
+        run: |
+          aws ec2 revoke-security-group-ingress --group-name ${{ env.AWS_SG_NAME }} --protocol tcp --port 3306 --cidr ${{ steps.ip.outputs.ipv4 }}/32
+        env:
+          # Since RDS/MySQL in Master/Management AWS Account
+          AWS_ACCESS_KEY_ID: ${{ secrets[format('AWS_ACCESS_KEY_ID_{0}', 'MANG1')] }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets[format('AWS_SECRET_ACCESS_KEY_{0}', 'MANG1')] }}
+          AWS_DEFAULT_REGION: ${{ env.AWS_DEFAULT_REGION }}
+        if: always()
+  
+  # Commenting this job
+  # Pro: no duplicate steps
+  # Cons: we can't re-run this job
+  #publish:
+    #needs: build
+    #runs-on: ubuntu-latest
+    # It seems we don't need this
+    # needed for react.js for "npm build"
+    #permissions:
+      #contents: read
+      #packages: write
+    #steps:
+      #- uses: actions/checkout@v3
+      #- uses: actions/setup-node@v3
+        #with:
+          #node-version: 16
+          # It seems we don't need those
+          ##registry-url: https://npm.pkg.github.com/
+          ## scope: "@circles-zone"
+      # `npm i` works better for us than npm ci (i.e. local-storage-typescript backend) 
+      # if we get 403 Permission permission_denied: read_package, we need to add read permission in the repo we try to access in https://github.com/orgs/circles-zone/packages/npm/database-without-orm-local-typescript-package/settings for example    
+      #- name: npm i
+        #run: |
+          #cd ./$project_name
+          #npm i
+              
+      - name: Authenticate PUT with private GitHub package to avoid 401
+        run: |
+          # To solve "code E403 npm ERR! 403 403 Forbidden - PUT https://npm.pkg.github.com/circles-zone/@circles-zone%2fdatabase-typeorm-local - Permission permission_denied: The token provided does not match expected scopes.
+          echo "@circles-zone:registry=https://npm.pkg.github.com" > ./$project_name/.npmrc
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> ./$project_name/.npmrc
+          
+      # Increase the version number instead of updating package.json manually (other solution might be 'grunt bump:patch')
+      #- run: git config --global user.email "info@circls.zone"
+      #- run: git config --global user.name "Circles"
+
+      # npm version patch is not working yet
+      #- name: npm version patch
+        #run: |
+          # npm version patch should run in the project directory and not in the root directory
+          #cd ./$project_name
+          #npm version patch
+
+      # Should make sure the package.json version is unique
+      # Should add @circles-zone/ to the package name in package.json
+      # If we have "code E403" error we need to generate ./$project_name/.npmrc
+      - name: npm publish
+        run: |
+          cd ./$project_name
+          npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

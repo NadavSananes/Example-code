@@ -1,0 +1,7 @@
+npm init
+tsc --init
+npm install mysql2 ts-node typeorm typescript
+npm install @apollo/server graphql @as-integrations/aws-lambda
+npm install -D typescript
+npm install serverless
+npm install -D serverless-plugin-typescript
